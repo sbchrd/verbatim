@@ -1,9 +1,9 @@
-"""Dictée push-to-talk (F9) via Claude dans tmux (WSL).
-Maintenir F9 = dicter ; relâcher = le texte transcrit est collé dans le champ
+"""Dictée push-to-talk (F9 par défaut, modifiable) via Claude dans tmux (WSL).
+Maintenir la touche = dicter ; relâcher = le texte transcrit est collé dans le champ
 qui a le focus. Application de zone de notification (icône près de l'horloge).
 Prérequis Windows: pip install -r requirements.txt
 """
-import re, time, subprocess, sys, threading, os, keyboard, pyperclip
+import base64, json, re, time, subprocess, sys, threading, os, keyboard, pyperclip
 import math, ctypes, ctypes.wintypes
 import tkinter as tk
 import pystray
@@ -20,6 +20,17 @@ else:
     HERE = os.path.dirname(os.path.abspath(__file__))
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # pas de fenêtre console qui clignote
 LOG = os.path.join(HERE, "voice_debug.log")
+CONFIG = os.path.join(HERE, "config.json")
+
+def load_hotkey():
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            return json.load(f).get("hotkey") or "f9"
+    except Exception:
+        return "f9"
+
+HOTKEY = load_hotkey()  # touche de dictée (modifiable depuis le menu de l'icône)
+hooks = []
 # Script côté WSL, embarqué dans l'exécutable et installé au démarrage
 SCRIPT = "/tmp/speech-to-text-hold.sh"
 HOLD_SH = r'''#!/bin/bash
@@ -32,27 +43,31 @@ case "$1" in
     # Processus persistant piloté par l'app via stdin (évite ~0,2 s de démarrage de
     # wsl.exe à chaque appui). Il doit rester vivant, sinon WSL tue la boucle d'espaces.
     LOOP=""; WATCH=""
-    stop_all() {
-      for p in $LOOP $WATCH; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
-      LOOP=""; WATCH=""
-    }
+    kill_tree() { [ -n "$1" ] && { pkill -P "$1" 2>/dev/null; kill "$1" 2>/dev/null; }; return 0; }
     while read -r cmd; do
       case "$cmd" in
         hold)
-          stop_all
+          kill_tree "$LOOP"; kill_tree "$WATCH"
           ( tmux send-keys -t "$TARGET" -l " "
             sleep "${HOLD_DELAY:-0.1}"
             while true; do tmux send-keys -t "$TARGET" -l " "; sleep 0.03; done ) &
           LOOP=$!
-          # signale à l'app quand Claude écoute réellement
-          ( for i in $(seq 1 150); do
-              tmux capture-pane -t "$TARGET" -p | grep -qi "listening" && { echo READY; break; }
-              sleep 0.03
+          # surveille le pane: READY quand Claude écoute, PANE <base64> à chaque changement
+          ( last=""; ready=""
+            for i in $(seq 1 400); do
+              p=$(tmux capture-pane -t "$TARGET" -p -J)
+              if [ "$p" != "$last" ]; then
+                last="$p"
+                printf 'PANE %s\n' "$(printf '%s' "$p" | base64 -w0)"
+              fi
+              if [ -z "$ready" ] && printf '%s' "$p" | grep -qi listening; then echo READY; ready=1; fi
+              sleep 0.05
             done ) &
           WATCH=$!
           ;;
-        stop) stop_all ;;
-        quit) stop_all; exit 0 ;;
+        stop) kill_tree "$LOOP"; LOOP="" ;;
+        unwatch) kill_tree "$WATCH"; WATCH="" ;;
+        quit) kill_tree "$LOOP"; kill_tree "$WATCH"; exit 0 ;;
       esac
     done
     ;;
@@ -230,11 +245,66 @@ def start_daemon():
                               stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     threading.Thread(target=read_daemon, args=(daemon,), daemon=True).start()
 
+def dlog(msg):
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
+WAVE = re.compile("[▁▂▃▄▅▆▇█]")
+
+def clean_text(pane):
+    """Texte transcrit dans la boîte de saisie (sans le texte indicatif ni l'indicateur sonore)."""
+    t = WAVE.sub("", extract_input(pane)).strip()
+    if t == baseline or t.startswith('Try "'):
+        return ""
+    return t
+
+# --- état de la dictée en cours ---
+dictating = False       # entre l'appui et la fin du traitement
+gen = 0                 # incrémenté à chaque appui (invalide un traitement précédent)
+cur_text = ""           # dernier texte vu dans Claude
+last_change = 0.0       # heure du dernier changement de cur_text
+typed = ""              # texte déjà inséré dans le champ actif
+field_lock = threading.Lock()
+
 def read_daemon(proc):
-    for line in proc.stdout:
-        if line.strip() == b"READY" and held:
+    global cur_text, last_change
+    for raw in proc.stdout:
+        line = raw.strip()
+        if line == b"READY" and held:
             overlay.recording()
-            say("🎙 Parlez maintenant (relâchez F9 pour terminer)", REC)
+            say(f"🎙 Parlez maintenant ({stop_hint()})", REC)
+        elif line.startswith(b"PANE ") and dictating:
+            try:
+                pane = base64.b64decode(line[5:]).decode("utf-8", "replace")
+            except Exception:
+                continue
+            t = clean_text(pane)
+            if t != cur_text:
+                cur_text, last_change = t, time.time()
+                dlog(f"texte dans Claude: {t!r}")
+
+def sync_field(target):
+    """Met à jour le champ actif pour qu'il contienne `target` (corrige la fin si Claude révise)."""
+    global typed
+    with field_lock:
+        k = 0
+        while k < min(len(typed), len(target)) and typed[k] == target[k]:
+            k += 1
+        for _ in range(len(typed) - k):
+            keyboard.send("backspace")
+        if target[k:]:
+            paste(target[k:])
+        typed = target
+
+def field_worker():
+    while True:
+        time.sleep(0.05)
+        target = cur_text
+        if dictating and target and target != typed:
+            try:
+                sync_field(target)
+            except Exception as e:
+                dlog(f"erreur de mise à jour du champ: {e}")
 
 def daemon_cmd(cmd):
     global daemon
@@ -244,51 +314,143 @@ def daemon_cmd(cmd):
     daemon.stdin.flush()
 baseline = ""  # contenu de la boîte avant la dictée (ex: texte indicatif « Try ... »)
 
-def on_press(_):
-    global held
-    if held:  # ignore l'auto-repeat du clavier
-        return
+def start_dictation():
+    global held, dictating, gen, cur_text, typed
     held = True
+    with field_lock:
+        gen += 1
+        cur_text = typed = ""
+        dictating = True
     say("⏳ Préparation... attendez le rouge pour parler", WORK)
     overlay.prepare()
     daemon_cmd("hold")
 
-def on_release(_):
+def stop_dictation():
     global held
-    if not held:
-        return
     held = False
     overlay.hide()
     daemon_cmd("stop")
+    my_gen = gen
     def finish():
-        global baseline
+        global dictating, typed
         t0 = time.time()
         say("⏳ Transcription en cours...", WORK)
-        out = prev = pane = ""
-        with open(LOG, "a", encoding="utf-8") as log:
-            log.write(f"\n===== relâche {time.strftime('%H:%M:%S')} =====\n")
-            for i in range(30):  # max ~7 s
-                pane = wsl("bash", SCRIPT, "capture", TARGET).stdout
-                out = extract_input(pane)
-                if out == baseline or out.startswith('Try "'):  # texte indicatif ou ancien contenu
-                    out = ""
-                log.write(f"--- +{time.time()-t0:.1f}s extrait={out!r}\n")
-                log.write("\n".join(pane.splitlines()[-8:]) + "\n")
-                if out and out == prev:
-                    break
-                prev = out
-                time.sleep(0.2)
+        # attend que le texte soit complet, stable et entièrement inséré dans le champ
+        while time.time() - t0 < 10:
+            time.sleep(0.1)
+            if gen != my_gen:
+                return  # une nouvelle dictée a commencé
+            if cur_text and typed == cur_text and time.time() - last_change > 0.6:
+                break
+        if gen != my_gen:
+            return
+        out = typed
         say(f"📝 Texte ({time.time()-t0:.1f}s): {out}" if out else "Aucun texte détecté", IDLE)
+        dictating = False
+        daemon_cmd("unwatch")
         if out:
-            paste(out)
             wsl("bash", SCRIPT, "clear", TARGET)
             time.sleep(0.3)
             left = extract_input(wsl("bash", SCRIPT, "capture", TARGET).stdout)
-            if left and left != baseline:
+            if left and left != baseline and not left.startswith('Try "'):
                 say("⚠️ Le message n'a pas pu être effacé dans Claude.")
-        if not out:
+        else:
             say(f"(aucun texte détecté — détails dans {LOG})")
+        typed = ""
     threading.Thread(target=finish, daemon=True).start()
+
+# --- gestes : maintenir (push-to-talk) ou double-appui (mode continu) ---
+TAP_MAX = 0.30      # un appui plus court que ça est un « tap »
+DOUBLE_WINDOW = 0.40  # délai max entre la fin du 1er tap et le 2e appui
+mode = "idle"       # idle | hold | pending (tap relâché, attend un 2e appui) | latched
+down = False        # touche physiquement enfoncée (filtre l'auto-repeat)
+press_t = 0.0
+pending_timer = None
+mode_lock = threading.Lock()
+
+def stop_hint():
+    return (f"appuyez de nouveau sur {HOTKEY.upper()} pour terminer" if mode == "latched"
+            else f"relâchez {HOTKEY.upper()} pour terminer")
+
+def on_press(_):
+    global mode, down, press_t, pending_timer
+    with mode_lock:
+        if down:  # auto-repeat du clavier
+            return
+        down = True
+        if mode == "idle":
+            mode, press_t = "hold", time.time()
+            start_dictation()
+        elif mode == "pending":  # double appui: l'enregistrement continue sans tenir la touche
+            if pending_timer:
+                pending_timer.cancel()
+            mode = "latched"
+            say(f"🎙 Mode continu — {stop_hint()}", REC)
+        elif mode == "latched":  # appui suivant: on arrête
+            mode = "idle"
+            stop_dictation()
+
+def on_release(_):
+    global mode, down, pending_timer
+    with mode_lock:
+        if not down:
+            return
+        down = False
+        if mode == "hold":
+            if time.time() - press_t < TAP_MAX:  # tap: attend un éventuel 2e appui
+                mode = "pending"
+                pending_timer = threading.Timer(DOUBLE_WINDOW, expire_pending)
+                pending_timer.daemon = True
+                pending_timer.start()
+            else:  # maintien normal: fin de la dictée
+                mode = "idle"
+                stop_dictation()
+
+def expire_pending():
+    global mode
+    with mode_lock:
+        if mode == "pending":  # pas de 2e appui: tap simple, on termine
+            mode = "idle"
+            stop_dictation()
+
+def unbind_hotkey():
+    for remove in hooks:  # keyboard.on_*_key renvoie la fonction qui retire le hook
+        try:
+            remove()
+        except Exception:
+            pass
+    hooks.clear()
+
+def bind_hotkey():
+    unbind_hotkey()
+    hooks[:] = [keyboard.on_press_key(HOTKEY, on_press, suppress=True),
+                keyboard.on_release_key(HOTKEY, on_release, suppress=True)]
+    if tray:
+        tray.title = f"Prêt — maintenez {HOTKEY.upper()} pour dicter"
+        tray.update_menu()
+
+def change_hotkey(icon=None, _item=None):
+    """Attend la prochaine touche pressée et en fait la nouvelle touche de dictée (Échap = annuler)."""
+    def work():
+        global HOTKEY
+        global mode, down
+        with mode_lock:  # abandonne tout geste en cours
+            if held:
+                stop_dictation()
+            mode, down = "idle", False
+        unbind_hotkey()  # libère la touche actuelle pour pouvoir la lire
+        say("⌨️ Appuyez sur la nouvelle touche de dictée... (Échap pour annuler)", WORK)
+        key = keyboard.read_key(suppress=True)  # suppress: la touche n'est pas tapée dans l'appli active
+        if key and key != "esc":
+            HOTKEY = key
+            try:
+                with open(CONFIG, "w", encoding="utf-8") as f:
+                    json.dump({"hotkey": HOTKEY}, f)
+            except Exception as e:
+                say(f"Impossible d'enregistrer la touche: {e}")
+        bind_hotkey()
+        say(f"Prêt. Maintenez {HOTKEY.upper()} pour dicter.", IDLE)
+    threading.Thread(target=work, daemon=True).start()
 
 def cleanup():
     if daemon and daemon.poll() is None:
@@ -313,13 +475,16 @@ if __name__ == "__main__":
     install_script()
     start_claude()
     start_daemon()
+    threading.Thread(target=field_worker, daemon=True).start()
     time.sleep(3)  # laisse Claude afficher sa boîte de saisie pour mémoriser son état au repos
     baseline = extract_input(wsl("bash", SCRIPT, "capture", TARGET).stdout)
-    keyboard.on_press_key("f9", on_press, suppress=True)
-    keyboard.on_release_key("f9", on_release, suppress=True)
-    tray = pystray.Icon("speech-to-text", make_icon(IDLE), "Prêt — maintenez F9 pour dicter",
-                        menu=pystray.Menu(pystray.MenuItem("Quitter", quit_app)))
-    say("Prêt. Maintenez F9 pour dicter.")
+    bind_hotkey()
+    tray = pystray.Icon("speech-to-text", make_icon(IDLE), f"Prêt — maintenez {HOTKEY.upper()} pour dicter",
+                        menu=pystray.Menu(
+                            pystray.MenuItem(lambda item: f"Changer la touche (actuelle : {HOTKEY.upper()})",
+                                             change_hotkey),
+                            pystray.MenuItem("Quitter", quit_app)))
+    say(f"Prêt. Maintenez {HOTKEY.upper()} pour dicter.")
     try:
         tray.run()  # bloque jusqu'à « Quitter » (ou Ctrl+C depuis un terminal)
     except KeyboardInterrupt:
