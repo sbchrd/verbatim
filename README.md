@@ -8,7 +8,7 @@ La transcription est faite par le mode vocal de [Claude Code](https://claude.com
 
 1. Au lancement, l'application démarre une session tmux `speech-to-text` qui exécute `claude` dans WSL (aucune fenêtre visible).
 2. Quand vous **appuyez** sur la touche de dictée :
-   - une pastille animée apparaît en bas à droite de l'écran : **ambre** pendant la préparation, **rouge** quand Claude écoute réellement. Parlez à partir du rouge.
+   - une pastille animée apparaît en bas à droite de l'écran : **ambre** pendant la préparation, **verte** quand Claude écoute réellement. Parlez à partir du vert.
 3. Quand vous **relâchez** la touche :
    - l'application attend la fin de la transcription dans Claude, puis la saisie de Claude est effacée.
 
@@ -30,7 +30,7 @@ Aucune installation de Python n'est nécessaire pour utiliser l'exécutable.
 
 1. Construisez ou récupérez `SpeechToText.exe` (voir ci-dessous) et lancez-le.
 2. Cliquez dans le champ de texte où vous voulez écrire.
-3. Maintenez **F9**, attendez la pastille rouge, parlez, puis relâchez.
+3. Maintenez **F9**, attendez la pastille verte, parlez, puis relâchez.
 
 **Mode continu (mains libres)** : faites un **double appui** sur la touche (deux appuis courts rapprochés). L'enregistrement continue sans tenir la touche, jusqu'à ce que vous appuyiez **une fois de plus** sur la même touche. Un appui court isolé est simplement ignoré (la dictée se termine sans texte).
 

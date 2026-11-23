@@ -5,7 +5,6 @@ Prérequis Windows: pip install -r requirements.txt
 """
 import base64, json, re, time, subprocess, sys, threading, os, keyboard, pyperclip
 import math, ctypes, ctypes.wintypes
-import tkinter as tk
 import pystray
 from PIL import Image, ImageDraw
 
@@ -105,69 +104,141 @@ def make_icon(color):
     d.line((22, 58, 42, 58), fill=color, width=4)
     return img
 
-IDLE, REC, WORK = (120, 120, 120, 255), (220, 40, 40, 255), (230, 160, 20, 255)
+IDLE, REC, WORK = (120, 120, 120, 255), (34, 197, 94, 255), (230, 160, 20, 255)
+
+# --- Pastille animée (fenêtre Win32 à transparence par pixel => bords lissés) ---
+from ctypes import wintypes as wt
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # rendu net sur écrans à échelle > 100 %
+except Exception:
+    pass
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32")
+kernel32 = ctypes.WinDLL("kernel32")
+LRESULT = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", wt.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HANDLE),
+                ("hCursor", wt.HANDLE), ("hbrBackground", wt.HANDLE),
+                ("lpszMenuName", wt.LPCWSTR), ("lpszClassName", wt.LPCWSTR)]
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG),
+                ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG),
+                ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+
+class BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
+
+user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.DefWindowProcW.restype = LRESULT
+user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+user32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.HWND, wt.HANDLE,
+                                   wt.HINSTANCE, wt.LPVOID]
+user32.CreateWindowExW.restype = wt.HWND
+user32.GetDC.argtypes = [wt.HWND]; user32.GetDC.restype = wt.HDC
+user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+user32.UpdateLayeredWindow.argtypes = [wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE),
+                                       wt.HDC, ctypes.POINTER(wt.POINT), wt.COLORREF,
+                                       ctypes.POINTER(BLENDFUNCTION), wt.DWORD]
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]; gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateDIBSection.argtypes = [wt.HDC, ctypes.c_void_p, wt.UINT, ctypes.POINTER(ctypes.c_void_p),
+                                   wt.HANDLE, wt.DWORD]
+gdi32.CreateDIBSection.restype = wt.HANDLE
+gdi32.SelectObject.argtypes = [wt.HDC, wt.HANDLE]; gdi32.SelectObject.restype = wt.HANDLE
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]; kernel32.GetModuleHandleW.restype = wt.HINSTANCE
+
+GREEN = (34, 197, 94)
+AMBER = (230, 160, 20)
 
 class Overlay(threading.Thread):
     """Pastille animée en bas à droite de l'écran pendant l'enregistrement.
-    Fenêtre sans bordure, toujours au-dessus, transparente aux clics, sans voler le focus."""
-    SIZE, KEY = 96, "#010203"
+    Fenêtre sans bordure, toujours au-dessus, transparente aux clics, sans voler le focus.
+    Dessinée avec PIL en suréchantillonnage (anti-alias) et affichée via UpdateLayeredWindow."""
+    BASE, SS = 96, 4  # taille logique (px) et facteur de suréchantillonnage
 
     def __init__(self):
         super().__init__(daemon=True)
-        self.state = 0  # 0 = caché, 1 = préparation (ambre), 2 = enregistrement (rouge)
+        self.state = 0  # 0 = caché, 1 = préparation (ambre), 2 = écoute (vert)
         self.ready = threading.Event()
 
-    def run(self):
-        S = self.SIZE
-        root = self.root = tk.Tk()
-        root.overrideredirect(True)
-        root.attributes("-topmost", True, "-transparentcolor", self.KEY, "-alpha", 0.0)
-        root.configure(bg=self.KEY)
-        # zone de travail (au-dessus de la barre des tâches)
-        rect = ctypes.wintypes.RECT()
-        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
-        root.geometry(f"{S}x{S}+{rect.right - S - 16}+{rect.bottom - S - 16}")
-        cv = self.cv = tk.Canvas(root, width=S, height=S, bg=self.KEY, highlightthickness=0)
-        cv.pack()
-        root.update_idletasks()
-        # ne jamais prendre le focus ni intercepter la souris
-        # (uniquement sur la fenêtre de premier niveau, pas sur le widget enfant de Tk)
-        top = ctypes.windll.user32.GetAncestor(root.winfo_id(), 2)  # GA_ROOT
-        st = ctypes.windll.user32.GetWindowLongW(top, -20)
-        ctypes.windll.user32.SetWindowLongW(top, -20, st | 0x20 | 0x80 | 0x08000000)
-        self.t0 = time.time()
-        self.ready.set()
-        self.tick()
-        root.mainloop()
+    def render(self, t, color, S):
+        SS = self.SS
+        N = S * SS
+        f = N / 96.0
+        c = N / 2
+        img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse((2 * f, 2 * f, N - 2 * f, N - 2 * f), fill=(24, 24, 24, 235))
+        for k in range(2):  # ondes qui s'étendent et s'estompent (vrai alpha)
+            ph = (t * 0.9 + k * 0.5) % 1.0
+            r = (20 + 24 * ph) * f
+            layer = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+            ImageDraw.Draw(layer).ellipse((c - r, c - r, c + r, c + r),
+                                          outline=color + (int(230 * (1 - ph)),), width=max(1, int(3 * f)))
+            img = Image.alpha_composite(img, layer)
+        d = ImageDraw.Draw(img)
+        r = (20 + 2.5 * math.sin(t * 6)) * f  # cœur qui « respire »
+        d.ellipse((c - r, c - r, c + r, c + r), fill=color + (255,))
+        w = (255, 255, 255, 255)  # micro
+        d.rounded_rectangle((c - 4.5 * f, c - 14 * f, c + 4.5 * f, c + 3 * f), radius=4.5 * f, fill=w)
+        d.arc((c - 8 * f, c - 7 * f, c + 8 * f, c + 9 * f), 0, 180, fill=w, width=int(2 * f))
+        d.line((c, c + 9 * f, c, c + 13 * f), fill=w, width=int(2 * f))
+        d.line((c - 4 * f, c + 13 * f, c + 4 * f, c + 13 * f), fill=w, width=int(2 * f))
+        return img.resize((S, S), Image.LANCZOS)
 
-    def tick(self):
-        cv, S = self.cv, self.SIZE
-        on = self.state != 0
-        rec = self.state == 2
-        col, col_r = ("#dc2828", "{g:02x}1a1a") if rec else ("#e6a014", "{g:02x}{h:02x}14")
-        self.root.attributes("-alpha", 0.95 if on else 0.0)
-        if on:
-            t = time.time() - self.t0
-            c = S / 2
-            cv.delete("all")
-            cv.create_oval(2, 2, S - 2, S - 2, fill="#1e1e1e", outline="")
-            # ondes qui s'étendent depuis le centre
-            for k in range(2):
-                ph = (t * 0.9 + k * 0.5) % 1.0
-                r = 20 + 24 * ph
-                g = int(220 * (1 - ph) + 30 * ph)
-                h = int(160 * (1 - ph) + 30 * ph)
-                cv.create_oval(c - r, c - r, c + r, c + r, outline="#" + col_r.format(g=g, h=h), width=3)
-            r = 20 + 2.5 * math.sin(t * 6)  # coeur qui « respire »
-            cv.create_oval(c - r, c - r, c + r, c + r, fill=col, outline="")
-            # micro
-            cv.create_rectangle(c - 4, c - 11, c + 4, c + 3, fill="white", outline="", width=0)
-            cv.create_oval(c - 4, c - 14, c + 4, c - 6, fill="white", outline="")
-            cv.create_oval(c - 4, c - 1, c + 4, c + 7, fill="white", outline="")
-            cv.create_arc(c - 8, c - 7, c + 8, c + 9, start=180, extent=180, style="arc", outline="white", width=2)
-            cv.create_line(c, c + 9, c, c + 13, fill="white", width=2)
-            cv.create_line(c - 4, c + 13, c + 4, c + 13, fill="white", width=2)
-        self.root.after(33, self.tick)
+    def run(self):
+        cls = "SpeechToTextOverlay"
+        wndproc = WNDPROC(lambda h, m, w, l: user32.DefWindowProcW(h, m, w, l))
+        wc = WNDCLASSW()
+        wc.lpfnWndProc, wc.lpszClassName = wndproc, cls
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        user32.RegisterClassW(ctypes.byref(wc))
+        try:
+            scale = ctypes.windll.user32.GetDpiForSystem() / 96.0
+        except Exception:
+            scale = 1.0
+        S = int(self.BASE * scale)
+        rect = wt.RECT()
+        user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
+        margin = int(16 * scale)
+        pos = wt.POINT(rect.right - S - margin, rect.bottom - S - margin)
+        # LAYERED | TOPMOST | TOOLWINDOW | NOACTIVATE | TRANSPARENT (clics traversants)
+        ex = 0x80000 | 0x8 | 0x80 | 0x08000000 | 0x20
+        hwnd = user32.CreateWindowExW(ex, cls, "Speech to text", 0x80000000, pos.x, pos.y, S, S,
+                                      None, None, wc.hInstance, None)
+        screen_dc = user32.GetDC(None)
+        mem_dc = gdi32.CreateCompatibleDC(screen_dc)
+        bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), S, -S, 1, 32, 0, 0, 0, 0, 0, 0)
+        bits = ctypes.c_void_p()
+        bmp = gdi32.CreateDIBSection(mem_dc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
+        gdi32.SelectObject(mem_dc, bmp)
+        size, src = wt.SIZE(S, S), wt.POINT(0, 0)
+        blend = BLENDFUNCTION(0, 0, 255, 1)  # AC_SRC_OVER, alpha par pixel
+        msg, visible, t0 = wt.MSG(), False, time.time()
+        self.ready.set()
+        while True:
+            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+            st = self.state
+            if st:
+                img = self.render(time.time() - t0, GREEN if st == 2 else AMBER, S)
+                r_, g_, b_, a_ = img.convert("RGBa").split()  # alpha prémultiplié, ordre BGRA
+                ctypes.memmove(bits, Image.merge("RGBA", (b_, g_, r_, a_)).tobytes(), S * S * 4)
+                user32.UpdateLayeredWindow(hwnd, screen_dc, ctypes.byref(pos), ctypes.byref(size),
+                                           mem_dc, ctypes.byref(src), 0, ctypes.byref(blend), 2)
+                if not visible:
+                    user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+                    visible = True
+            elif visible:
+                user32.ShowWindow(hwnd, 0)
+                visible = False
+            time.sleep(0.033)
 
     def prepare(self): self.state = 1
     def recording(self): self.state = 2
@@ -336,7 +407,7 @@ def start_dictation():
         gen += 1
         cur_text = typed = ""
         dictating = True
-    say("⏳ Préparation... attendez le rouge pour parler", WORK)
+    say("⏳ Préparation... attendez le vert pour parler", WORK)
     overlay.prepare()
     daemon_cmd("hold")
 
