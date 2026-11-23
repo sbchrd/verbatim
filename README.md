@@ -37,12 +37,13 @@ Aucune installation de Python n'est nécessaire pour utiliser l'exécutable.
 ### Menu de l'icône (clic droit)
 
 - **Changer la touche (actuelle : F9)** : appuyez sur la nouvelle touche (Échap pour annuler). Elle est enregistrée dans `config.json` à côté de l'exécutable. Supprimez ce fichier pour revenir à F9.
+- **Journal de debug** (case à cocher) : désactivé par défaut. Une fois coché, l'application écrit `voice_debug.log` à côté de l'exécutable. Le réglage est conservé dans `config.json`.
 - **Quitter** : arrête la dictée en cours, ferme la session tmux et quitte l'application.
 
 ### Fichiers générés
 
-- `voice_debug.log` : journal (dernières lectures de la boîte de saisie de Claude), à côté de l'exécutable. Utile en cas de problème.
-- `config.json` : touche de dictée choisie.
+- `voice_debug.log` : journal de debug, créé seulement si l'option est activée dans le menu. Utile en cas de problème.
+- `config.json` : touche de dictée choisie et état du journal de debug.
 
 ## Construire l'exécutable
 

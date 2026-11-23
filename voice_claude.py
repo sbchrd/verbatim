@@ -22,14 +22,23 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # pas de fenêtre consol
 LOG = os.path.join(HERE, "voice_debug.log")
 CONFIG = os.path.join(HERE, "config.json")
 
-def load_hotkey():
+def load_config():
     try:
         with open(CONFIG, encoding="utf-8") as f:
-            return json.load(f).get("hotkey") or "f9"
+            return json.load(f)
     except Exception:
-        return "f9"
+        return {}
 
-HOTKEY = load_hotkey()  # touche de dictée (modifiable depuis le menu de l'icône)
+def save_config():
+    try:
+        with open(CONFIG, "w", encoding="utf-8") as f:
+            json.dump({"hotkey": HOTKEY, "debug": DEBUG}, f)
+    except Exception:
+        pass
+
+_cfg = load_config()
+HOTKEY = _cfg.get("hotkey") or "f9"   # touche de dictée (modifiable depuis le menu de l'icône)
+DEBUG = bool(_cfg.get("debug"))       # journal de debug (désactivé par défaut)
 hooks = []
 # Script côté WSL, embarqué dans l'exécutable et installé au démarrage
 SCRIPT = "/tmp/speech-to-text-hold.sh"
@@ -166,10 +175,18 @@ class Overlay(threading.Thread):
 
 overlay = Overlay()
 
+def dlog(msg, force=False):
+    """Écrit dans le journal si le debug est activé (ou si force)."""
+    if DEBUG or force:
+        try:
+            with open(LOG, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+        except Exception:
+            pass
+
 def say(msg, color=None):
     """Journal + info-bulle de l'icône (+ console si lancée depuis un terminal)."""
-    with open(LOG, "a", encoding="utf-8") as f:
-        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    dlog(msg)
     if sys.stdout:
         try:
             print(msg)
@@ -182,6 +199,7 @@ def say(msg, color=None):
 
 def fatal(msg):
     say(msg)
+    dlog(msg, force=True)  # les erreurs fatales sont toujours journalisées
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, msg, "Speech to text", 0x10)
@@ -245,9 +263,6 @@ def start_daemon():
                               stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     threading.Thread(target=read_daemon, args=(daemon,), daemon=True).start()
 
-def dlog(msg):
-    with open(LOG, "a", encoding="utf-8") as f:
-        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
 
 WAVE = re.compile("[▁▂▃▄▅▆▇█]")
 
@@ -355,7 +370,7 @@ def stop_dictation():
             if left and left != baseline and not left.startswith('Try "'):
                 say("⚠️ Le message n'a pas pu être effacé dans Claude.")
         else:
-            say(f"(aucun texte détecté — détails dans {LOG})")
+            say("(aucun texte détecté — activez « Journal de debug » dans le menu de l'icône pour les détails)")
         typed = ""
     threading.Thread(target=finish, daemon=True).start()
 
@@ -413,6 +428,14 @@ def expire_pending():
             mode = "idle"
             stop_dictation()
 
+def toggle_debug(icon=None, _item=None):
+    global DEBUG
+    DEBUG = not DEBUG
+    save_config()
+    say(f"Journal de debug {'activé' if DEBUG else 'désactivé'}" + (f" ({LOG})" if DEBUG else ""))
+    if tray:
+        tray.update_menu()
+
 def unbind_hotkey():
     for remove in hooks:  # keyboard.on_*_key renvoie la fonction qui retire le hook
         try:
@@ -443,11 +466,7 @@ def change_hotkey(icon=None, _item=None):
         key = keyboard.read_key(suppress=True)  # suppress: la touche n'est pas tapée dans l'appli active
         if key and key != "esc":
             HOTKEY = key
-            try:
-                with open(CONFIG, "w", encoding="utf-8") as f:
-                    json.dump({"hotkey": HOTKEY}, f)
-            except Exception as e:
-                say(f"Impossible d'enregistrer la touche: {e}")
+            save_config()
         bind_hotkey()
         say(f"Prêt. Maintenez {HOTKEY.upper()} pour dicter.", IDLE)
     threading.Thread(target=work, daemon=True).start()
@@ -483,6 +502,7 @@ if __name__ == "__main__":
                         menu=pystray.Menu(
                             pystray.MenuItem(lambda item: f"Changer la touche (actuelle : {HOTKEY.upper()})",
                                              change_hotkey),
+                            pystray.MenuItem("Journal de debug", toggle_debug, checked=lambda item: DEBUG),
                             pystray.MenuItem("Quitter", quit_app)))
     say(f"Prêt. Maintenez {HOTKEY.upper()} pour dicter.")
     try:
