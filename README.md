@@ -1,75 +1,75 @@
-# Speech to Text pour Windows (via Claude Code)
+# Verbatim — voice dictation for Windows (via Claude Code)
 
-Application Windows de dictée « push-to-talk » : **maintenez une touche (F9 par défaut), parlez, relâchez**, et le texte transcrit est collé dans le champ de texte qui a le focus.
+A push-to-talk dictation app for Windows: **hold a key (F9 by default), speak, release**, and the transcribed text is pasted into whichever text field has focus.
 
-La transcription est faite par le mode vocal de [Claude Code](https://claude.com/claude-code), qui tourne dans une session **tmux** cachée, dans **WSL**. L'application simule la touche espace maintenue (le geste de dictée de Claude Code), lit le texte qui apparaît dans la boîte de saisie de Claude, le colle là où vous écriviez, puis vide la boîte de saisie.
+Transcription is done by the voice mode of [Claude Code](https://claude.com/claude-code), running in a hidden **tmux** session inside **WSL**. The app simulates the held space key (Claude Code's dictation gesture), reads the text that appears in Claude's input box, pastes it where you were typing, then clears the input box.
 
-## Fonctionnement
+## How it works
 
-1. Au lancement, l'application démarre une session tmux `speech-to-text` qui exécute `claude` dans WSL (aucune fenêtre visible).
-2. Quand vous **appuyez** sur la touche de dictée :
-   - une pastille animée apparaît en bas à droite de l'écran : **ambre** pendant la préparation, **verte** quand Claude écoute réellement. Parlez à partir du vert.
-3. Quand vous **relâchez** la touche :
-   - l'application attend la fin de la transcription dans Claude, puis la saisie de Claude est effacée.
+1. On launch, the app starts a tmux session named `verbatim` that runs `claude` in WSL (no visible window).
+2. When you **press** the dictation key:
+   - an animated dot appears at the bottom right of the screen: **amber** while preparing, **green** when Claude is actually listening. Start speaking once it turns green.
+3. When you **release** the key:
+   - the app waits for Claude to finish transcribing, then clears Claude's input.
 
-Le texte est inséré **au fur et à mesure** : chaque changement du texte dans Claude est répercuté dans le champ actif (collage avec `Ctrl+V`, presse-papiers d'origine restauré). Si Claude révise un passage déjà transcrit, l'application l'efface avec des retours arrière et le remplace.
+Text is inserted **as you speak**: every change to the text in Claude is mirrored into the active field (pasted with `Ctrl+V`, original clipboard restored). If Claude revises a passage that was already transcribed, the app erases it with backspaces and replaces it.
 
-L'application vit dans la zone de notification (icône près de l'horloge). Elle ne prend jamais le focus.
+The app lives in the notification area (icon near the clock). It never takes focus.
 
-## Prérequis
+## Requirements
 
-- Windows 10/11 avec **WSL 2**
-- Dans la distribution WSL (Ubuntu par défaut) :
+- Windows 10/11 with **WSL 2**
+- In the WSL distribution (Ubuntu by default):
   - **tmux**
-  - **Claude Code** installé, avec le **mode vocal activé** (`/voice`), et le dossier du projet approuvé (la boîte de confirmation de confiance n'étant pas visible)
-- Si votre distribution WSL par défaut n'est pas celle qui contient tmux et Claude (par exemple `docker-desktop`), définissez la variable d'environnement `VOICE_DISTRO` avec le nom de la bonne distribution (voir `wsl -l -v`).
+  - **Claude Code** installed, with **voice mode enabled** (`/voice`), and the project folder trusted (the trust confirmation dialog is not visible)
+- If your default WSL distribution is not the one containing tmux and Claude (for example `docker-desktop`), set the `VOICE_DISTRO` environment variable to the name of the right distribution (see `wsl -l -v`).
 
-Aucune installation de Python n'est nécessaire pour utiliser l'exécutable.
+No Python installation is needed to use the executable.
 
-## Utilisation
+## Usage
 
-1. Construisez ou récupérez `SpeechToText.exe` (voir ci-dessous) et lancez-le.
-2. Cliquez dans le champ de texte où vous voulez écrire.
-3. Maintenez **F9**, attendez la pastille verte, parlez, puis relâchez.
+1. Build or obtain `Verbatim.exe` (see below) and launch it.
+2. Click in the text field where you want to write.
+3. Hold **F9**, wait for the green dot, speak, then release.
 
-**Mode continu (mains libres)** : faites un **double appui** sur la touche (deux appuis courts rapprochés). L'enregistrement continue sans tenir la touche, jusqu'à ce que vous appuyiez **une fois de plus** sur la même touche. Un appui court isolé est simplement ignoré (la dictée se termine sans texte).
+**Continuous (hands-free) mode**: **double-tap** the key (two quick presses in a row). Recording continues without holding the key, until you press the same key **once more**. A single short tap is simply ignored (the dictation ends with no text).
 
-### Menu de l'icône (clic droit)
+### Tray icon menu (right-click)
 
-- **Changer la touche (actuelle : F9)** : appuyez sur la nouvelle touche (Échap pour annuler). Elle est enregistrée dans `config.json` à côté de l'exécutable. Supprimez ce fichier pour revenir à F9.
-- **Journal de debug** (case à cocher) : désactivé par défaut. Une fois coché, l'application écrit `voice_debug.log` à côté de l'exécutable. Le réglage est conservé dans `config.json`.
-- **Quitter** : arrête la dictée en cours, ferme la session tmux et quitte l'application.
+- **Change key (current: F9)**: press the new key (Esc to cancel). It is saved in `config.json` next to the executable. Delete that file to go back to F9.
+- **Debug log** (checkbox): off by default. When checked, the app writes `voice_debug.log` next to the executable. The setting is stored in `config.json`.
+- **Quit**: stops any dictation in progress, closes the tmux session and exits the app.
 
-### Fichiers générés
+### Generated files
 
-- `voice_debug.log` : journal de debug, créé seulement si l'option est activée dans le menu. Utile en cas de problème.
-- `config.json` : touche de dictée choisie et état du journal de debug.
+- `voice_debug.log`: debug log, created only if the option is enabled in the menu. Useful when troubleshooting.
+- `config.json`: the chosen dictation key and the debug log state.
 
-## Construire l'exécutable
+## Building the executable
 
-Prérequis : Python 3 sur Windows (nécessaire uniquement pour la construction).
+Requirement: Python 3 on Windows (needed only for building).
 
 ```bat
 build.bat
 ```
 
-Cela installe les dépendances (`requirements.txt`) et produit `dist\SpeechToText.exe`, un fichier unique, sans console.
+This installs the dependencies (`requirements.txt`) and produces `dist\Verbatim.exe`, a single file with no console.
 
-Pour lancer directement depuis les sources :
+To run directly from source:
 
 ```bat
 pip install -r requirements.txt
 pythonw voice_claude.py
 ```
 
-## Notes techniques
+## Technical notes
 
-- La touche espace maintenue est simulée par un petit processus WSL persistant, piloté via stdin, qui envoie des espaces à tmux (`tmux send-keys`). Il signale `READY` dès que Claude affiche `listening…`.
-- Le texte est extrait de la boîte de saisie de Claude : la ligne qui commence par `❯`, encadrée de deux lignes pleines (`────`). Le texte indicatif gris de Claude (`Try "…"`) est ignoré.
-- Le script côté WSL est intégré dans `voice_claude.py` et réinstallé à chaque lancement dans `/tmp/speech-to-text-hold.sh`.
+- The held space key is simulated by a small persistent WSL process, driven through stdin, that sends spaces to tmux (`tmux send-keys`). It reports `READY` as soon as Claude displays `listening…`.
+- Text is extracted from Claude's input box: the line starting with `❯`, framed by two full-width rules (`────`). Claude's gray placeholder text (`Try "…"`) is ignored.
+- The WSL-side script is embedded in `voice_claude.py` and reinstalled on every launch at `/tmp/verbatim-hold.sh`.
 
 ## Limitations
 
-- L'exécutable n'est pas signé : Windows SmartScreen ou Defender peut afficher un avertissement.
-- Le hook clavier global peut ne pas fonctionner dans des fenêtres lancées en administrateur, sauf si l'application l'est aussi.
-- L'extraction du texte dépend de l'apparence de l'interface de Claude Code ; une mise à jour de celle-ci peut obliger à ajuster les motifs dans `extract_input()`.
+- The executable is not signed: Windows SmartScreen or Defender may show a warning.
+- The global keyboard hook may not work in windows running as administrator, unless the app is too.
+- Text extraction depends on the look of Claude Code's interface; an update to it may require adjusting the patterns in `extract_input()`.

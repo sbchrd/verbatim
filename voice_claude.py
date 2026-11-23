@@ -8,7 +8,7 @@ import math, ctypes, ctypes.wintypes
 import pystray
 from PIL import Image, ImageDraw
 
-SESSION = "speech-to-text"
+SESSION = "verbatim"
 TARGET = f"{SESSION}:0.0"
 # Distro WSL à utiliser (le défaut de wsl.exe peut être docker-desktop, sans bash/tmux)
 DISTRO = os.environ.get("VOICE_DISTRO", "Ubuntu")
@@ -40,10 +40,10 @@ HOTKEY = _cfg.get("hotkey") or "f9"   # touche de dictée (modifiable depuis le 
 DEBUG = bool(_cfg.get("debug"))       # journal de debug (désactivé par défaut)
 hooks = []
 # Script côté WSL, embarqué dans l'exécutable et installé au démarrage
-SCRIPT = "/tmp/speech-to-text-hold.sh"
+SCRIPT = "/tmp/verbatim-hold.sh"
 HOLD_SH = r'''#!/bin/bash
 # Usage: voice-hold.sh daemon|capture|clear   (exécuté dans WSL)
-TARGET="${2:-speech-to-text:0.0}"
+TARGET="${2:-verbatim:0.0}"
 PIDFILE="/tmp/voice-hold.pid"
 
 case "$1" in
@@ -192,7 +192,7 @@ class Overlay(threading.Thread):
         return img.resize((S, S), Image.LANCZOS)
 
     def run(self):
-        cls = "SpeechToTextOverlay"
+        cls = "VerbatimOverlay"
         wndproc = WNDPROC(lambda h, m, w, l: user32.DefWindowProcW(h, m, w, l))
         wc = WNDCLASSW()
         wc.lpfnWndProc, wc.lpszClassName = wndproc, cls
@@ -209,7 +209,7 @@ class Overlay(threading.Thread):
         pos = wt.POINT(rect.right - S - margin, rect.bottom - S - margin)
         # LAYERED | TOPMOST | TOOLWINDOW | NOACTIVATE | TRANSPARENT (clics traversants)
         ex = 0x80000 | 0x8 | 0x80 | 0x08000000 | 0x20
-        hwnd = user32.CreateWindowExW(ex, cls, "Speech to text", 0x80000000, pos.x, pos.y, S, S,
+        hwnd = user32.CreateWindowExW(ex, cls, "Verbatim", 0x80000000, pos.x, pos.y, S, S,
                                       None, None, wc.hInstance, None)
         screen_dc = user32.GetDC(None)
         mem_dc = gdi32.CreateCompatibleDC(screen_dc)
@@ -273,7 +273,7 @@ def fatal(msg):
     dlog(msg, force=True)  # les erreurs fatales sont toujours journalisées
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, "Speech to text", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, msg, "Verbatim", 0x10)
     except Exception:
         pass
     sys.exit(1)
@@ -569,7 +569,7 @@ if __name__ == "__main__":
     time.sleep(3)  # laisse Claude afficher sa boîte de saisie pour mémoriser son état au repos
     baseline = extract_input(wsl("bash", SCRIPT, "capture", TARGET).stdout)
     bind_hotkey()
-    tray = pystray.Icon("speech-to-text", make_icon(IDLE), f"Prêt — maintenez {HOTKEY.upper()} pour dicter",
+    tray = pystray.Icon("verbatim", make_icon(IDLE), f"Prêt — maintenez {HOTKEY.upper()} pour dicter",
                         menu=pystray.Menu(
                             pystray.MenuItem(lambda item: f"Changer la touche (actuelle : {HOTKEY.upper()})",
                                              change_hotkey),
