@@ -302,8 +302,11 @@ def install_script():
 
 def start_claude():
     if wsl("tmux", "has-session", "-t", SESSION).returncode != 0:
-        # shell de login: sinon ~/.local/bin (où se trouve claude) n'est pas dans le PATH
-        r = wsl("tmux", "new-session", "-d", "-s", SESSION, "bash -lc claude")
+        # shell de login: sinon ~/.local/bin (où se trouve claude) n'est pas dans le PATH.
+        # Suggestions de message désactivées: affichées en gris dans la boîte de saisie,
+        # elles seraient lues comme du texte dicté.
+        r = wsl("tmux", "new-session", "-d", "-s", SESSION,
+                "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false bash -lc claude")
         time.sleep(1)
         if r.returncode != 0 or wsl("tmux", "has-session", "-t", SESSION).returncode != 0:
             fatal(f"Impossible de démarrer Claude dans tmux: {r.stderr.strip()}")
