@@ -60,9 +60,11 @@ case "$1" in
             sleep "${HOLD_DELAY:-0.1}"
             while true; do tmux send-keys -t "$TARGET" -l " "; sleep 0.03; done ) &
           LOOP=$!
-          # surveille le pane: READY quand Claude écoute, PANE <base64> à chaque changement
+          # surveille le pane: READY quand Claude écoute, PANE <base64> à chaque changement.
+          # Pas de limite de durée (une dictée longue doit rester suivie) : la boucle tourne
+          # jusqu'à « unwatch »/« hold »/« quit », ou jusqu'à la mort du démon (kill -0 $$).
           ( last=""; ready=""
-            for i in $(seq 1 400); do
+            while kill -0 $$ 2>/dev/null; do
               p=$(tmux capture-pane -t "$TARGET" -p -J)
               if [ "$p" != "$last" ]; then
                 last="$p"
@@ -78,6 +80,8 @@ case "$1" in
         quit) kill_tree "$LOOP"; kill_tree "$WATCH"; exit 0 ;;
       esac
     done
+    # stdin fermé (l'app s'est arrêtée) : ne laisse rien tourner derrière
+    kill_tree "$LOOP"; kill_tree "$WATCH"
     ;;
   clear)
     # Vide la boîte de saisie de Claude (Ctrl+C une fois = efface la saisie)
