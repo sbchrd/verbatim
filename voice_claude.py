@@ -379,8 +379,21 @@ def sync_field(target):
         for _ in range(len(typed) - k):
             keyboard.send("backspace")
         if target[k:]:
-            paste(target[k:])
+            insert(target[k:])
         typed = target
+
+def insert(text):
+    """Insère `text` dans le champ actif. Les espaces en début et en fin sont tapés au clavier:
+    certains champs (ex: barre d'adresse de Chrome) les retirent du texte collé."""
+    core = text.strip()
+    lead = text[:len(text) - len(text.lstrip())]
+    trail = text[len(text.rstrip()):] if core else ""
+    for _ in lead:
+        keyboard.send("space")
+    if core:
+        paste(core)
+    for _ in trail:
+        keyboard.send("space")
 
 def field_worker():
     while True:
